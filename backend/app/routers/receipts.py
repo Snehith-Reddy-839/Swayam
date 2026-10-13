@@ -1,9 +1,10 @@
-from typing import List, Dict
-from fastapi import APIRouter, Depends, HTTPException
+from typing import List, Dict, Optional
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, HTTPException, Header, status
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import get_db, utc_now
 from app.models.group import GroupOrder, GroupParticipant
 from app.models.cart import CartItem
 from app.models.receipt import Receipt
@@ -19,20 +20,52 @@ router = APIRouter(tags=["Receipts & Summaries"])
 
 
 @router.get("/receipts/{token_or_id}", response_model=ReceiptResponse)
-def get_receipt(token_or_id: str, db: Session = Depends(get_db)):
+def get_receipt(
+    token_or_id: str,
+    authorization: Optional[str] = Header(None),
+    x_session_token: Optional[str] = Header(None),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    from app.services.auth_service import resolve_caller_identity
+
+    token_clean = token_or_id.strip()
+
+    # 1. Attempt lookup by secure unguessable access_token first (shareable receipt capability token)
+    receipt = db.query(Receipt).filter(Receipt.access_token == token_clean).first()
+    if receipt:
+        if receipt.is_revoked:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Receipt access token has been revoked."
+            )
+        if receipt.expires_at:
+            exp = receipt.expires_at if receipt.expires_at.tzinfo else receipt.expires_at.replace(tzinfo=timezone.utc)
+            if utc_now() > exp:
+                raise HTTPException(
+                    status_code=status.HTTP_410_GONE,
+                    detail="Receipt access token has expired."
+                )
+        group = db.query(GroupOrder).filter(GroupOrder.id == receipt.group_order_id).first()
+        participant = db.query(GroupParticipant).filter(GroupParticipant.id == receipt.participant_id).first()
+        if not group or not participant:
+            raise HTTPException(status_code=404, detail="Receipt reference data missing")
+        return format_receipt_response(receipt, group, participant)
+
+    # 2. If not a valid access_token, check if token_or_id matches receipt_number or receipt ID or participant ID
+    # Private receipt lookup by internal identifier strictly requires authenticated caller identity
     receipt = db.query(Receipt).filter(
-        (Receipt.access_token == token_or_id) |
-        (Receipt.id == token_or_id) |
-        (Receipt.receipt_number == token_or_id) |
-        (Receipt.participant_id == token_or_id)
+        (Receipt.id == token_clean) |
+        (Receipt.receipt_number == token_clean) |
+        (Receipt.participant_id == token_clean)
     ).order_by(Receipt.issued_at.desc()).first()
 
     if not receipt:
-        # Check by payment attempt ID
+        # Also check by payment transaction ID
         from app.models.payment import PaymentTransaction
         tx = db.query(PaymentTransaction).filter(
-            (PaymentTransaction.payment_attempt_id == token_or_id) |
-            (PaymentTransaction.participant_id == token_or_id)
+            (PaymentTransaction.payment_attempt_id == token_clean) |
+            (PaymentTransaction.id == token_clean)
         ).order_by(PaymentTransaction.created_at.desc()).first()
         if tx and tx.receipt:
             receipt = tx.receipt
@@ -40,9 +73,48 @@ def get_receipt(token_or_id: str, db: Session = Depends(get_db)):
     if not receipt:
         raise HTTPException(status_code=404, detail="Digital receipt not found")
 
-    group = db.query(GroupOrder).filter(GroupOrder.id == receipt.group_order_id).first()
-    participant = db.query(GroupParticipant).filter(GroupParticipant.id == receipt.participant_id).first()
+    # Private receipt lookup requires verified caller identity
+    user, guest = resolve_caller_identity(
+        authorization=authorization,
+        session_token=session_token,
+        x_session_token=x_session_token,
+        db=db
+    )
+    if not (user or guest):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required: Valid session token or bearer token required to access private receipt by identifier."
+        )
 
+    # Verify caller identity: Must be receipt owner OR the genuine host of this receipt's group
+    participant = receipt.participant
+    is_owner = False
+    is_host = False
+
+    if user:
+        is_owner = (participant.user_id is not None and participant.user_id == user.id)
+        host_p = db.query(GroupParticipant).filter(
+            GroupParticipant.group_order_id == receipt.group_order_id,
+            GroupParticipant.user_id == user.id,
+            GroupParticipant.is_host == True
+        ).first()
+        is_host = bool(host_p)
+    elif guest:
+        is_owner = (participant.guest_session_id is not None and participant.guest_session_id == guest.id)
+        host_p = db.query(GroupParticipant).filter(
+            GroupParticipant.group_order_id == receipt.group_order_id,
+            GroupParticipant.guest_session_id == guest.id,
+            GroupParticipant.is_host == True
+        ).first()
+        is_host = bool(host_p)
+
+    if not is_owner and not is_host:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Unauthorized: You do not have permission to view another participant's private receipt."
+        )
+
+    group = receipt.group_order
     if not group or not participant:
         raise HTTPException(status_code=404, detail="Receipt reference data missing")
 

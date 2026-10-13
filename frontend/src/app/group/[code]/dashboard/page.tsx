@@ -141,6 +141,7 @@ function HostDashboardContent() {
       await api.hostManualConfirmPayment({
         participant_id: manualConfirmTarget.id,
         host_participant_id: hostPartId,
+        session_token: stored?.session_token,
         upi_reference: manualUtr.trim() || undefined,
         notes: manualNotes.trim() || undefined,
       });
@@ -405,10 +406,16 @@ function HostDashboardContent() {
                       className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full ${
                         isPaid
                           ? "bg-[#ECFDF5] text-[#10B981] border border-emerald-200"
+                          : share.payment_status === "PAYMENT_CLAIMED"
+                          ? "bg-amber-50 text-amber-700 border border-amber-300"
                           : "bg-[#FFF4ED] text-[#FF5C00] border border-[#FFD9C6]"
                       }`}
                     >
-                      {isPaid ? "PAID ✓" : "PENDING"}
+                      {isPaid
+                        ? "PAID ✓"
+                        : share.payment_status === "PAYMENT_CLAIMED"
+                        ? "CLAIMED (VERIFY)"
+                        : "PENDING"}
                     </span>
                   </div>
 
@@ -422,9 +429,15 @@ function HostDashboardContent() {
                           amount: share.total_payable_inr,
                         })
                       }
-                      className="bg-[#FAF8F5] hover:bg-[#FFF4ED] text-[#FF5C00] border border-[#FFD9C6] px-3 py-1.5 rounded-xl text-xs font-bold transition-colors shadow-2xs whitespace-nowrap"
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors shadow-2xs whitespace-nowrap ${
+                        share.payment_status === "PAYMENT_CLAIMED"
+                          ? "bg-[#FF5C00] hover:bg-[#E55200] text-white shadow-md shadow-[#FF5C00]/25"
+                          : "bg-[#FAF8F5] hover:bg-[#FFF4ED] text-[#FF5C00] border border-[#FFD9C6]"
+                      }`}
                     >
-                      Confirm UPI Manually
+                      {share.payment_status === "PAYMENT_CLAIMED"
+                        ? "Confirm Claim ✓"
+                        : "Confirm UPI Manually"}
                     </button>
                   )}
                 </div>

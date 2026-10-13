@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -31,8 +32,13 @@ def get_group_billing(group_id: str, db: Session = Depends(get_db)):
 async def update_billing_policy(
     group_id: str,
     req: UpdateFeePolicyRequest,
+    authorization: Optional[str] = Header(None),
+    x_session_token: Optional[str] = Header(None),
+    session_token: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
+    from app.services.auth_service import resolve_host_participant
+
     gid_clean = group_id.strip()
     group = db.query(GroupOrder).filter(
         or_(
@@ -43,6 +49,15 @@ async def update_billing_policy(
     ).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group order not found")
+
+    # Host Authorization
+    resolve_host_participant(
+        group_order_id=group.id,
+        authorization=authorization,
+        session_token=session_token,
+        x_session_token=x_session_token,
+        db=db
+    )
 
     if req.fee_policy not in ["EQUAL_SPLIT", "PROPORTIONAL", "HOST_COVERS", "CUSTOM"]:
         raise HTTPException(status_code=400, detail="Invalid fee allocation policy")

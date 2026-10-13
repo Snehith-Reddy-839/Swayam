@@ -32,6 +32,7 @@ function ReceiptContent() {
   const [loading, setLoading] = useState(true);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (!token) return;
@@ -39,6 +40,7 @@ function ReceiptContent() {
     async function fetchReceipt() {
       try {
         setLoading(true);
+        setErrorMsg(null);
         const data = await api.getReceipt(token);
         setReceipt(data);
 
@@ -53,6 +55,7 @@ function ReceiptContent() {
         }
       } catch (err: any) {
         console.warn("Could not load receipt for token:", token, err?.message);
+        setErrorMsg(err?.message || "Could not load receipt");
       } finally {
         setLoading(false);
       }
@@ -94,12 +97,19 @@ function ReceiptContent() {
   }
 
   if (!receipt) {
+    const isDenied = errorMsg?.toLowerCase().includes("unauthorized") ||
+      errorMsg?.toLowerCase().includes("permission") ||
+      errorMsg?.toLowerCase().includes("revoked") ||
+      errorMsg?.toLowerCase().includes("authentication");
+
     return (
       <div className="max-w-md mx-auto px-4 py-16 text-center space-y-4">
         <ReceiptIcon className="w-12 h-12 text-[#FF5C00] mx-auto" />
-        <h2 className="font-bold text-xl text-[#1A1A1A]">Receipt Not Found</h2>
+        <h2 className="font-bold text-xl text-[#1A1A1A]">
+          {isDenied ? "Receipt Access Denied" : "Receipt Not Available"}
+        </h2>
         <p className="text-xs text-[#71717A]">
-          Could not find an authenticated receipt for this token.
+          {errorMsg || "Could not find an authenticated receipt for this token."}
         </p>
         <Link
           href="/"

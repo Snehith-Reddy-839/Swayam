@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -24,18 +24,27 @@ async def record_merchant_order_placement(
     group_id: str,
     req: MerchantOrderCreateRequest,
     host_participant_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    x_session_token: Optional[str] = Header(None),
+    session_token: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
+    from app.services.auth_service import resolve_host_participant
+
     group = db.query(GroupOrder).filter(GroupOrder.id == group_id).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
 
-    # Fetch host participant
-    host = db.query(GroupParticipant).filter(
-        GroupParticipant.group_order_id == group_id,
-        GroupParticipant.is_host == True
-    ).first()
-    host_name = host.display_name if host else group.host_name
+    # Strictly authorize the host of this group
+    host = resolve_host_participant(
+        group_order_id=group.id,
+        authorization=authorization,
+        session_token=session_token,
+        x_session_token=x_session_token,
+        host_participant_id_hint=host_participant_id,
+        db=db
+    )
+    host_name = host.display_name
 
     # Check if merchant order already exists
     order = db.query(MerchantOrder).filter(MerchantOrder.group_order_id == group_id).first()
@@ -72,7 +81,7 @@ async def record_merchant_order_placement(
         group_order_id=group_id,
         action="MERCHANT_ORDER_PLACED",
         actor_type="HOST",
-        actor_id=host.id if host else "host",
+        actor_id=host.id,
         actor_name=host_name,
         details_json=f'{{"platform": "{req.platform_name}", "ext_id": "{req.external_order_id or ""}", "eta_mins": {req.estimated_delivery_minutes}}}'
     )
@@ -108,11 +117,25 @@ async def record_merchant_order_placement(
 async def update_merchant_order_status(
     group_id: str,
     req: MerchantOrderStatusUpdateRequest,
+    authorization: Optional[str] = Header(None),
+    x_session_token: Optional[str] = Header(None),
+    session_token: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
+    from app.services.auth_service import resolve_host_participant
+
     order = db.query(MerchantOrder).filter(MerchantOrder.group_order_id == group_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Merchant order not found for this group")
+
+    # Strictly authorize the host of this group
+    resolve_host_participant(
+        group_order_id=group_id,
+        authorization=authorization,
+        session_token=session_token,
+        x_session_token=x_session_token,
+        db=db
+    )
 
     order.status = req.status
     if req.notes:

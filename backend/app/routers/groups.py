@@ -144,7 +144,8 @@ async def create_group(
         created_at=group.created_at,
         participants_count=1,
         share_url=share_url,
-        host_participant_id=host_participant.id
+        host_participant_id=host_participant.id,
+        host_session_token=guest_session.session_token if guest_session else None
     )
 
 
@@ -299,7 +300,8 @@ async def join_group(
             payment_status=existing_participant.payment_status,
             amount_paid_paise=existing_participant.amount_paid_paise,
             amount_paid_inr=existing_participant.amount_paid_paise / 100.0,
-            joined_at=existing_participant.joined_at
+            joined_at=existing_participant.joined_at,
+            session_token=guest_session.session_token if guest_session else None
         )
 
     # Create new participant with explicit UUID
@@ -348,7 +350,8 @@ async def join_group(
         payment_status=participant.payment_status,
         amount_paid_paise=participant.amount_paid_paise,
         amount_paid_inr=participant.amount_paid_paise / 100.0,
-        joined_at=participant.joined_at
+        joined_at=participant.joined_at,
+        session_token=guest_session.session_token if guest_session else None
     )
 
 
@@ -378,7 +381,15 @@ def get_group_participants(group_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{group_id}/lock")
-async def lock_cart(group_id: str, db: Session = Depends(get_db)):
+async def lock_cart(
+    group_id: str,
+    authorization: Optional[str] = Header(None),
+    x_session_token: Optional[str] = Header(None),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    from app.services.auth_service import resolve_host_participant
+
     gid_clean = group_id.strip()
     group = db.query(GroupOrder).filter(
         (GroupOrder.id == gid_clean) |
@@ -387,6 +398,15 @@ async def lock_cart(group_id: str, db: Session = Depends(get_db)):
     ).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
+
+    # Host Authorization
+    resolve_host_participant(
+        group_order_id=group.id,
+        authorization=authorization,
+        session_token=session_token,
+        x_session_token=x_session_token,
+        db=db
+    )
 
     group.cart_status = "LOCKED"
     db.commit()
@@ -400,7 +420,15 @@ async def lock_cart(group_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{group_id}/reopen")
-async def reopen_cart(group_id: str, db: Session = Depends(get_db)):
+async def reopen_cart(
+    group_id: str,
+    authorization: Optional[str] = Header(None),
+    x_session_token: Optional[str] = Header(None),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    from app.services.auth_service import resolve_host_participant
+
     gid_clean = group_id.strip()
     group = db.query(GroupOrder).filter(
         (GroupOrder.id == gid_clean) |
@@ -409,6 +437,15 @@ async def reopen_cart(group_id: str, db: Session = Depends(get_db)):
     ).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
+
+    # Host Authorization
+    resolve_host_participant(
+        group_order_id=group.id,
+        authorization=authorization,
+        session_token=session_token,
+        x_session_token=x_session_token,
+        db=db
+    )
 
     if group.cart_status in ["FINALIZED"]:
         raise HTTPException(status_code=400, detail="Cannot reopen an already finalized order")

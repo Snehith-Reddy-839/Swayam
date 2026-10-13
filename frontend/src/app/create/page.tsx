@@ -64,7 +64,7 @@ export default function CreateGroupPage() {
       // Save guest session for host
       saveStoredGuestSession({
         id: group.host_participant_id || group.id,
-        session_token: "host_token",
+        session_token: group.host_session_token || "host_token",
         display_name: hostName.trim() || "Host",
         avatar_color: "#FF5C00",
       });

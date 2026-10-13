@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Integer, ForeignKey, DateTime, Text
+from typing import Optional
+from sqlalchemy import String, Integer, ForeignKey, DateTime, Text, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base, utc_now
 
@@ -31,6 +32,8 @@ class Receipt(Base):
     transaction_ref: Mapped[str] = mapped_column(String(100), nullable=False)
 
     issued_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    is_revoked: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Relationships
     group_order = relationship("GroupOrder", back_populates="receipts")

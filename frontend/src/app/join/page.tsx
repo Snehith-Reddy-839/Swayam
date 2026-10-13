@@ -64,7 +64,7 @@ function JoinGroupContent() {
       // Save session in local storage
       saveStoredGuestSession({
         id: participant.id,
-        session_token: "guest_token_" + participant.id,
+        session_token: participant.session_token || "guest_token_" + participant.id,
         display_name: participant.display_name,
         avatar_color: participant.avatar_color,
       });

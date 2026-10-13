@@ -7,6 +7,7 @@ class PaymentInitiateRequest(BaseModel):
     participant_id: str
     payment_mode: str = Field("UPI_QR", description="DEMO, UPI_QR, or RAZORPAY")
     idempotency_key: Optional[str] = None
+    session_token: Optional[str] = None
 
 
 class UPIQRDetailsResponse(BaseModel):
@@ -35,6 +36,10 @@ class PaymentVerifyRequest(BaseModel):
     payment_attempt_id: str
     payment_mode: str  # DEMO, UPI_QR, RAZORPAY
     
+    # Participant claiming or verifying payment (for authorization check)
+    participant_id: Optional[str] = None
+    session_token: Optional[str] = None
+    
     # Razorpay verification payload
     razorpay_order_id: Optional[str] = None
     razorpay_payment_id: Optional[str] = None
@@ -50,7 +55,7 @@ class PaymentVerifyRequest(BaseModel):
 class PaymentStatusResponse(BaseModel):
     payment_attempt_id: str
     participant_id: str
-    status: str  # PENDING, PROCESSING, PAID, FAILED, CANCELLED
+    status: str  # PENDING, PAYMENT_CLAIMED, PROCESSING, PAID, FAILED, CANCELLED
     payment_mode: str
     amount_paise: int
     amount_inr: float
@@ -58,10 +63,14 @@ class PaymentStatusResponse(BaseModel):
     receipt_token: Optional[str] = None
     failure_reason: Optional[str] = None
     verified_at: Optional[datetime] = None
+    is_simulated: bool = False
+    message: Optional[str] = None
 
 
 class ManualUPIConfirmRequest(BaseModel):
     participant_id: str
     host_participant_id: str
+    session_token: Optional[str] = None
     upi_reference: Optional[str] = None
     notes: Optional[str] = None
+

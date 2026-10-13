@@ -1,5 +1,5 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -25,10 +25,15 @@ router = APIRouter(prefix="/groups/{group_id}/cart", tags=["Collaborative Cart"]
 @router.post("/items", response_model=CartItemResponse)
 async def add_item_to_cart(
     group_id: str,
-    participant_id: str,
-    req: CartItemAddRequest,
+    participant_id: Optional[str] = None,
+    req: CartItemAddRequest = None,
+    authorization: Optional[str] = Header(None),
+    x_session_token: Optional[str] = Header(None),
+    session_token: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
+    from app.services.auth_service import resolve_caller_participant, resolve_caller_identity
+
     gid_clean = group_id.strip()
     group = db.query(GroupOrder).filter(
         or_(
@@ -46,12 +51,28 @@ async def add_item_to_cart(
             detail=f"Cannot add items. Cart status is currently '{group.cart_status}'."
         )
 
-    participant = db.query(GroupParticipant).filter(
-        GroupParticipant.id == participant_id,
-        GroupParticipant.group_order_id == group.id
-    ).first()
-    if not participant:
-        raise HTTPException(status_code=404, detail="Participant not found in this group")
+    # Enforce strict caller authentication
+    user, guest = resolve_caller_identity(
+        authorization=authorization,
+        session_token=session_token,
+        x_session_token=x_session_token,
+        db=db
+    )
+    if not (user or guest):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required: Valid session token or credentials required"
+        )
+
+    # Derive participant identity from validated server-issued credentials
+    participant = resolve_caller_participant(
+        group_order_id=group.id,
+        authorization=authorization,
+        session_token=session_token,
+        x_session_token=x_session_token,
+        participant_id_hint=participant_id,
+        db=db
+    )
 
     # Fetch trusted product from backend database
     product = db.query(Product).filter(Product.id == req.product_id).first()
@@ -66,7 +87,13 @@ async def add_item_to_cart(
     ).first()
 
     if existing_item:
-        existing_item.quantity += req.quantity
+        new_quantity = existing_item.quantity + req.quantity
+        if new_quantity > 50:
+            raise HTTPException(
+                status_code=400,
+                detail="Total quantity for a single product in cart cannot exceed 50"
+            )
+        existing_item.quantity = new_quantity
         if req.item_notes:
             existing_item.item_notes = req.item_notes
         item = existing_item
@@ -137,8 +164,13 @@ async def update_cart_item(
     group_id: str,
     item_id: str,
     req: CartItemUpdateRequest,
+    authorization: Optional[str] = Header(None),
+    x_session_token: Optional[str] = Header(None),
+    session_token: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
+    from app.services.auth_service import resolve_caller_identity
+
     gid_clean = group_id.strip()
     group = db.query(GroupOrder).filter(
         or_(
@@ -147,12 +179,57 @@ async def update_cart_item(
             GroupOrder.invite_code == gid_clean.upper()
         )
     ).first()
-    if not group or group.cart_status != "OPEN":
-        raise HTTPException(status_code=400, detail="Cannot modify cart at this time")
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    if group.cart_status != "OPEN":
+        raise HTTPException(status_code=400, detail=f"Cannot modify cart. Cart status is currently '{group.cart_status}'.")
 
-    item = db.query(CartItem).filter(CartItem.id == item_id, CartItem.group_order_id == group.id).first()
+    # Verify item exists and belongs strictly to the requested group
+    item = db.query(CartItem).filter(CartItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Cart item not found")
+    if item.group_order_id != group.id:
+        raise HTTPException(status_code=400, detail="Cart item does not belong to the specified group")
+
+    # Authorize caller: strictly require credentials
+    user, guest = resolve_caller_identity(
+        authorization=authorization,
+        session_token=session_token,
+        x_session_token=x_session_token,
+        db=db
+    )
+    if not (user or guest):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required: Valid session token or credentials required to modify cart items"
+        )
+
+    # Caller must be item owner OR host of this exact group
+    item_owner = item.participant
+    is_owner = False
+    is_host = False
+    if user:
+        is_owner = (item_owner.user_id is not None and item_owner.user_id == user.id)
+        host_p = db.query(GroupParticipant).filter(
+            GroupParticipant.group_order_id == group.id,
+            GroupParticipant.user_id == user.id,
+            GroupParticipant.is_host == True
+        ).first()
+        is_host = bool(host_p)
+    elif guest:
+        is_owner = (item_owner.guest_session_id is not None and item_owner.guest_session_id == guest.id)
+        host_p = db.query(GroupParticipant).filter(
+            GroupParticipant.group_order_id == group.id,
+            GroupParticipant.guest_session_id == guest.id,
+            GroupParticipant.is_host == True
+        ).first()
+        is_host = bool(host_p)
+
+    if not is_owner and not is_host:
+        raise HTTPException(
+            status_code=403,
+            detail="Unauthorized: You can only modify your own cart items unless you are the group host."
+        )
 
     if req.quantity == 0:
         participant_id = item.participant_id
@@ -219,8 +296,13 @@ async def update_cart_item(
 async def delete_cart_item(
     group_id: str,
     item_id: str,
+    authorization: Optional[str] = Header(None),
+    x_session_token: Optional[str] = Header(None),
+    session_token: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
+    from app.services.auth_service import resolve_caller_identity
+
     gid_clean = group_id.strip()
     group = db.query(GroupOrder).filter(
         or_(
@@ -229,12 +311,57 @@ async def delete_cart_item(
             GroupOrder.invite_code == gid_clean.upper()
         )
     ).first()
-    if not group or group.cart_status != "OPEN":
-        raise HTTPException(status_code=400, detail="Cannot modify cart at this time")
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    if group.cart_status != "OPEN":
+        raise HTTPException(status_code=400, detail=f"Cannot modify cart. Cart status is currently '{group.cart_status}'.")
 
-    item = db.query(CartItem).filter(CartItem.id == item_id, CartItem.group_order_id == group.id).first()
+    # Verify item exists and belongs strictly to the requested group
+    item = db.query(CartItem).filter(CartItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Cart item not found")
+    if item.group_order_id != group.id:
+        raise HTTPException(status_code=400, detail="Cart item does not belong to the specified group")
+
+    # Authorize caller: strictly require credentials
+    user, guest = resolve_caller_identity(
+        authorization=authorization,
+        session_token=session_token,
+        x_session_token=x_session_token,
+        db=db
+    )
+    if not (user or guest):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required: Valid session token or credentials required to delete cart items"
+        )
+
+    # Caller must be item owner OR host of this exact group
+    item_owner = item.participant
+    is_owner = False
+    is_host = False
+    if user:
+        is_owner = (item_owner.user_id is not None and item_owner.user_id == user.id)
+        host_p = db.query(GroupParticipant).filter(
+            GroupParticipant.group_order_id == group.id,
+            GroupParticipant.user_id == user.id,
+            GroupParticipant.is_host == True
+        ).first()
+        is_host = bool(host_p)
+    elif guest:
+        is_owner = (item_owner.guest_session_id is not None and item_owner.guest_session_id == guest.id)
+        host_p = db.query(GroupParticipant).filter(
+            GroupParticipant.group_order_id == group.id,
+            GroupParticipant.guest_session_id == guest.id,
+            GroupParticipant.is_host == True
+        ).first()
+        is_host = bool(host_p)
+
+    if not is_owner and not is_host:
+        raise HTTPException(
+            status_code=403,
+            detail="Unauthorized: You can only remove your own cart items unless you are the group host."
+        )
 
     participant_id = item.participant_id
     db.delete(item)

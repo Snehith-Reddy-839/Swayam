@@ -1,7 +1,7 @@
 import json
 import uuid
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy.orm import Session
 
 from app.models.group import GroupOrder, GroupParticipant
@@ -56,7 +56,8 @@ def generate_receipt_for_payment(
     discount = alloc.discount_share_paise if alloc else 0
     total_paid = transaction.amount_paise
 
-    receipt_num = f"MM-{datetime.now(timezone.utc).year}-{secrets.token_hex(4).upper()}"
+    now = datetime.now(timezone.utc)
+    receipt_num = f"MM-{now.year}-{secrets.token_hex(4).upper()}"
     access_token = secrets.token_urlsafe(32)
 
     receipt = Receipt(
@@ -73,7 +74,9 @@ def generate_receipt_for_payment(
         total_paid_paise=total_paid,
         payment_method=transaction.verified_by,
         transaction_ref=transaction.transaction_reference,
-        issued_at=datetime.now(timezone.utc)
+        issued_at=now,
+        expires_at=now + timedelta(days=90),
+        is_revoked=False
     )
     db.add(receipt)
     db.flush()

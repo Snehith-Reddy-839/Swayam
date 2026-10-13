@@ -123,6 +123,7 @@ export interface GroupDetail {
   participants_count: number;
   share_url: string;
   host_participant_id?: string;
+  host_session_token?: string;
 }
 
 export interface GroupParticipant {
@@ -134,6 +135,7 @@ export interface GroupParticipant {
   amount_paid_paise: number;
   amount_paid_inr: number;
   joined_at: string;
+  session_token?: string;
 }
 
 export interface CartItem {
@@ -345,10 +347,17 @@ export interface HostDashboardSummary {
 
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const baseUrl = getApiBaseUrl();
-  let url = `${baseUrl}${endpoint}`;
+  const url = `${baseUrl}${endpoint}`;
   const headers = new Headers(options.headers || {});
   if (!headers.has("Content-Type") && options.body) {
     headers.set("Content-Type", "application/json");
+  }
+
+  // Automatically attach stored session token if available
+  const stored = getStoredGuestSession();
+  if (stored?.session_token && !headers.has("Authorization") && !headers.has("X-Session-Token")) {
+    headers.set("Authorization", `Guest ${stored.session_token}`);
+    headers.set("X-Session-Token", stored.session_token);
   }
 
   let res: Response;
@@ -357,7 +366,8 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
       ...options,
       headers,
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : "Connection refused";
     // If connection to localhost failed, attempt 127.0.0.1 fallback (or vice-versa)
     let fallbackUrl: string | null = null;
     if (url.includes("localhost:8000")) {
@@ -373,10 +383,10 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
           headers,
         });
       } catch {
-        throw new Error(`Unable to reach MunchMate API (${err?.message || "Connection refused"}). Please verify backend is running on port 8000.`);
+        throw new Error(`Unable to reach MunchMate API (${errorMsg}). Please verify backend is running on port 8000.`);
       }
     } else {
-      throw new Error(`Unable to reach MunchMate API (${err?.message || "Connection refused"}). Please verify backend is running on port 8000.`);
+      throw new Error(`Unable to reach MunchMate API (${errorMsg}). Please verify backend is running on port 8000.`);
     }
   }
 
@@ -495,6 +505,8 @@ export const api = {
   verifyPayment: (payload: {
     payment_attempt_id: string;
     payment_mode: string;
+    participant_id?: string;
+    session_token?: string;
     demo_outcome?: "SUCCESS" | "FAILURE" | "PENDING";
     razorpay_order_id?: string;
     razorpay_payment_id?: string;
@@ -511,12 +523,20 @@ export const api = {
       receipt_id?: string;
       receipt_token?: string;
       failure_reason?: string;
+      is_simulated?: boolean;
+      message?: string;
     }>("/payments/verify", {
       method: "POST",
       body: JSON.stringify(payload),
     }),
 
-  hostManualConfirmPayment: (payload: { participant_id: string; host_participant_id: string; upi_reference?: string; notes?: string }) =>
+  hostManualConfirmPayment: (payload: {
+    participant_id: string;
+    host_participant_id: string;
+    session_token?: string;
+    upi_reference?: string;
+    notes?: string;
+  }) =>
     request<{
       payment_attempt_id: string;
       participant_id: string;
@@ -525,6 +545,8 @@ export const api = {
       amount_inr: number;
       receipt_id: string;
       receipt_token: string;
+      is_simulated?: boolean;
+      message?: string;
     }>("/payments/host-manual-confirm", {
       method: "POST",
       body: JSON.stringify(payload),

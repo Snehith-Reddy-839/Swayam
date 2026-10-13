@@ -57,6 +57,7 @@ class GroupParticipantResponse(BaseModel):
     amount_paid_paise: int
     amount_paid_inr: float
     joined_at: datetime
+    session_token: Optional[str] = None
 
 
 class GroupDetailResponse(BaseModel):
@@ -85,3 +86,4 @@ class GroupDetailResponse(BaseModel):
     participants_count: int
     share_url: str
     host_participant_id: Optional[str] = None
+    host_session_token: Optional[str] = None

@@ -117,6 +117,27 @@ function CheckoutContent() {
     loadCheckoutData();
   }, [code]);
 
+  // Initiate or switch payment mode safely
+  const handleSelectPaymentMode = async (newMode: "UPI_QR" | "DEMO" | "RAZORPAY") => {
+    setPaymentMode(newMode);
+    if (!myShare || myShare.total_payable_paise <= 0) return;
+    try {
+      setLoading(true);
+      const initResp = await api.initiatePayment({
+        participant_id: myShare.participant_id,
+        payment_mode: newMode,
+      });
+      setQrDetails({
+        ...initResp.data,
+        attempt_id: initResp.attempt_id,
+      });
+    } catch (err: any) {
+      console.error("Failed to initiate payment for mode:", newMode, err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const copyVpa = () => {
     if (!qrDetails?.vpa) return;
     navigator.clipboard.writeText(qrDetails.vpa);
@@ -124,24 +145,30 @@ function CheckoutContent() {
     setTimeout(() => setCopiedVpa(false), 2000);
   };
 
-  // Trigger Payment Verification
+  // Trigger Payment Verification or Claim
+  const [claimSuccessMessage, setClaimSuccessMessage] = useState<string | null>(null);
+
   const handleVerifyPayment = async (outcome: "SUCCESS" | "FAILURE" | "PENDING" = "SUCCESS") => {
-    if (!qrDetails?.attempt_id) return;
+    if (!qrDetails?.attempt_id || !myShare) return;
 
     try {
       setVerifying(true);
       setVerificationError(null);
+      setClaimSuccessMessage(null);
 
-      // In UPI or Demo mode: send verification request
+      const stored = getStoredGuestSession();
+
       const verifyResp = await api.verifyPayment({
         payment_attempt_id: qrDetails.attempt_id,
         payment_mode: paymentMode,
+        participant_id: myShare.participant_id,
+        session_token: stored?.session_token,
         demo_outcome: outcome,
         upi_reference: utrInput.trim() || undefined,
       });
 
       if (verifyResp.status === "PAID") {
-        // Trigger celebratory confetti!
+        // Trigger celebratory confetti for real/simulated confirmed payments
         try {
           confetti({
             particleCount: 100,
@@ -150,13 +177,16 @@ function CheckoutContent() {
           });
         } catch {}
 
-        // Redirect to digital receipt
+        // Redirect to receipt
         const targetToken = verifyResp.receipt_token || verifyResp.receipt_id || qrDetails.attempt_id;
         setTimeout(() => {
           router.push(`/receipt/${targetToken}`);
         }, 1200);
+      } else if (verifyResp.status === "PAYMENT_CLAIMED") {
+        // Real UPI flow: Pending host manual confirmation
+        setClaimSuccessMessage("Payment claimed! Your host has been notified to verify your UPI receipt.");
       } else if (verifyResp.status === "FAILED") {
-        setVerificationError("Simulated payment failed. Please retry.");
+        setVerificationError("Payment failed. Please retry or contact host.");
       } else {
         setVerificationError("Payment is currently processing. Please check again in a few seconds.");
       }
@@ -286,7 +316,7 @@ function CheckoutContent() {
           {/* Payment Mode Selector Tabs */}
           <div className="flex items-center gap-1.5 bg-[#FAF8F5] p-1 rounded-xl border border-[#EFE8DE]">
             <button
-              onClick={() => setPaymentMode("UPI_QR")}
+              onClick={() => handleSelectPaymentMode("UPI_QR")}
               className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5 ${
                 paymentMode === "UPI_QR"
                   ? "bg-white text-[#FF5C00] shadow-xs"
@@ -298,7 +328,7 @@ function CheckoutContent() {
             </button>
 
             <button
-              onClick={() => setPaymentMode("DEMO")}
+              onClick={() => handleSelectPaymentMode("DEMO")}
               className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5 ${
                 paymentMode === "DEMO"
                   ? "bg-white text-[#FF5C00] shadow-xs"
@@ -349,6 +379,23 @@ function CheckoutContent() {
                 </button>
               </div>
 
+              {/* Optional UTR input */}
+              <div className="text-left bg-[#FAF8F5] p-3 rounded-xl border border-[#EFE8DE]">
+                <label className="block text-[11px] font-bold text-[#1A1A1A] mb-1">
+                  12-digit UPI Reference / UTR Number (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={utrInput}
+                  onChange={(e) => setUtrInput(e.target.value)}
+                  placeholder="e.g. 429182390192"
+                  className="w-full px-3 py-1.5 text-xs rounded-lg border border-[#EFE8DE] bg-white font-mono focus:outline-none focus:ring-1 focus:ring-[#FF5C00]"
+                />
+                <span className="text-[10px] text-[#71717A] block mt-1">
+                  Found in your GPay / PhonePe / Paytm transaction details.
+                </span>
+              </div>
+
               {/* Mobile Intent deep link */}
               {qrDetails.upi_uri && (
                 <div>
@@ -372,16 +419,26 @@ function CheckoutContent() {
                   {verifying ? (
                     <>
                       <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>Verifying Payment with UPI...</span>
+                      <span>Submitting Payment Claim...</span>
                     </>
                   ) : (
                     <>
                       <Check className="w-4 h-4 stroke-[3]" />
-                      <span>I Have Paid (Confirm & Get Receipt)</span>
+                      <span>I Have Paid (Submit for Host Verification)</span>
                     </>
                   )}
                 </button>
               </div>
+
+              {claimSuccessMessage && (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-xl font-medium text-left">
+                  <div className="font-bold flex items-center gap-1.5 mb-0.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    <span>Payment Claim Recorded</span>
+                  </div>
+                  <p>{claimSuccessMessage}</p>
+                </div>
+              )}
 
               {verificationError && (
                 <p className="text-xs text-red-600 font-semibold">{verificationError}</p>

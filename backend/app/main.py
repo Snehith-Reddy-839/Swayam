@@ -27,11 +27,32 @@ logging.basicConfig(
 logger = logging.getLogger("munchmate.main")
 
 
+def ensure_schema_migrations(db_engine):
+    """Ensures existing databases are migrated with newly added columns."""
+    from sqlalchemy import text
+    try:
+        with db_engine.connect() as conn:
+            result = conn.execute(text("PRAGMA table_info(receipts);")).fetchall()
+            if result:
+                columns = [row[1] for row in result]
+                if "expires_at" not in columns:
+                    conn.execute(text("ALTER TABLE receipts ADD COLUMN expires_at DATETIME;"))
+                    conn.commit()
+                    logger.info("Migrated receipts table: added expires_at column.")
+                if "is_revoked" not in columns:
+                    conn.execute(text("ALTER TABLE receipts ADD COLUMN is_revoked BOOLEAN DEFAULT 0;"))
+                    conn.commit()
+                    logger.info("Migrated receipts table: added is_revoked column.")
+    except Exception as e:
+        logger.warning(f"Schema migration check skipped or failed: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Ensure database tables are created and seed data exists
+    # Startup: Ensure database tables are created, migrated, and seed data exists
     logger.info("Initializing MunchMate database and tables...")
     Base.metadata.create_all(bind=engine)
+    ensure_schema_migrations(engine)
     try:
         seed_database()
     except Exception as e:

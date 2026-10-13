@@ -65,10 +65,11 @@ def test_manual_upi_confirmation_by_host(client, db_session):
         "quantity": 2
     })
 
-    # Host manually marks payment received
+    # Host manually marks payment received using host's session_token
     confirm_resp = client.post("/api/v1/payments/host-manual-confirm", json={
         "participant_id": friend_p["id"],
         "host_participant_id": host_p["id"],
+        "session_token": grp.get("host_session_token"),
         "upi_reference": "UTR_TEST_123456",
         "notes": "Verified in host Google Pay app"
     })
@@ -121,22 +122,30 @@ def test_demo_payment_failure_scenario(client):
     }).json()
 
     p = client.post(f"/api/v1/groups/{grp['invite_code']}/join", json={"display_name": "Rahul"}).json()
-    client.post(f"/api/v1/groups/{grp['id']}/cart/items?participant_id={p['id']}", json={
-        "product_id": "p-kurkure",
-        "quantity": 2
-    })
+    client.post(
+        f"/api/v1/groups/{grp['id']}/cart/items?participant_id={p['id']}",
+        headers={"X-Session-Token": p["session_token"]},
+        json={"product_id": "p-kurkure", "quantity": 2}
+    )
 
     # Initiate payment attempt
-    init_resp = client.post("/api/v1/payments/initiate", json={
-        "participant_id": p["id"],
-        "payment_mode": "DEMO"
-    }).json()
+    init_resp = client.post(
+        "/api/v1/payments/initiate",
+        headers={"X-Session-Token": p["session_token"]},
+        json={
+            "participant_id": p["id"],
+            "session_token": p["session_token"],
+            "payment_mode": "DEMO"
+        }
+    ).json()
     attempt_id = init_resp["attempt_id"]
 
-    # Verify with FAILURE demo outcome
+    # Verify with FAILURE demo outcome using participant's session_token
     fail_resp = client.post("/api/v1/payments/verify", json={
         "payment_attempt_id": attempt_id,
         "payment_mode": "DEMO",
+        "participant_id": p["id"],
+        "session_token": p.get("session_token"),
         "demo_outcome": "FAILURE"
     }).json()
 
@@ -153,10 +162,11 @@ def test_combined_group_summary_receipt_api(client):
     }).json()
 
     p = client.post(f"/api/v1/groups/{grp['invite_code']}/join", json={"display_name": "Arjun"}).json()
-    client.post(f"/api/v1/groups/{grp['id']}/cart/items?participant_id={p['id']}", json={
-        "product_id": "p-redbull",
-        "quantity": 3
-    })
+    client.post(
+        f"/api/v1/groups/{grp['id']}/cart/items?participant_id={p['id']}",
+        headers={"X-Session-Token": p["session_token"]},
+        json={"product_id": "p-redbull", "quantity": 3}
+    )
 
     # Test summary by group UUID
     sum_by_id = client.get(f"/api/v1/receipts/groups/{grp['id']}/summary").json()
